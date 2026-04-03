@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Mic, MicOff, Phone, PhoneOff, Link2, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TranscriptFeed } from "@/components/TranscriptFeed";
@@ -38,17 +38,21 @@ export default function LiveCallPage() {
   useStreamSTT(localStream, callId, "agent", isOnCall);
   useStreamSTT(remoteStream, callId, "customer", isOnCall);
 
-  const audioRef = useRef<HTMLAudioElement>(null);
   const [duration, setDuration] = useState(0);
   const [isEnding, setIsEnding] = useState(false);
   const [copied, setCopied] = useState(false);
 
   // Play customer audio through speakers
   useEffect(() => {
-    if (remoteStream && audioRef.current) {
-      audioRef.current.srcObject = remoteStream;
-      audioRef.current.play().catch(() => {});
-    }
+    if (!remoteStream) return;
+    const audio = document.createElement("audio");
+    audio.autoplay = true;
+    audio.srcObject = remoteStream;
+    audio.play().catch(() => {});
+    return () => {
+      audio.pause();
+      audio.srcObject = null;
+    };
   }, [remoteStream]);
 
   // Duration timer
@@ -77,9 +81,6 @@ export default function LiveCallPage() {
 
   return (
     <div className="h-screen flex flex-col bg-[#0a0a0a] text-white overflow-hidden">
-      {/* Hidden audio element for customer voice */}
-      <audio ref={audioRef} autoPlay />
-
       {/* Top bar */}
       <header className="flex items-center justify-between px-4 md:px-6 py-3 border-b border-[#333] shrink-0">
         <div className="flex items-center gap-3">

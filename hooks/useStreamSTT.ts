@@ -1,17 +1,17 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { db } from "@/lib/firebase";
+import { doc, updateDoc, arrayUnion } from "firebase/firestore";
 
-const SILENCE_THRESHOLD = 0.015;
-const SILENCE_DURATION_MS = 800;
-const MIN_SPEECH_SAMPLES = 8000; // ~0.5s at 16kHz
+const SARVAM_API_KEY = process.env.NEXT_PUBLIC_SARVAM_API_KEY ?? "";
+const SARVAM_WS_URL = "wss://api.sarvam.ai/speech-to-text/ws?language-code=unknown&model=saaras:v3";
+const CHUNK_MS = 250; // Send audio every 250ms — Sarvam handles VAD internally
 
 /**
- * VAD-based STT: captures raw PCM from a MediaStream via AudioWorklet-like approach,
- * detects silence, encodes as WAV, and sends to /api/stt.
- *
- * Uses ScriptProcessorNode (deprecated but universally supported) to get raw PCM,
- * which we encode as a proper WAV file — no MediaRecorder webm issues.
+ * Connects a MediaStream directly to Sarvam.ai's streaming WebSocket.
+ * Captures PCM at 16kHz, sends as base64, receives real-time transcripts.
+ * Writes each transcript to Firestore.
  */
 export function useStreamSTT(
   stream: MediaStream | null,
@@ -19,174 +19,133 @@ export function useStreamSTT(
   speaker: "customer" | "agent",
   isActive: boolean
 ) {
-  const cleanupRef = useRef<(() => void) | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    if (!stream || !isActive || !callId) return;
+    if (!stream || !isActive || !callId || !SARVAM_API_KEY) return;
 
     let destroyed = false;
     let audioContext: AudioContext | null = null;
     let scriptNode: ScriptProcessorNode | null = null;
+    let ws: WebSocket | null = null;
+    let pcmBuffer: Int16Array[] = [];
+    let sendInterval: ReturnType<typeof setInterval> | null = null;
 
-    // Accumulate PCM samples during speech
-    let speechBuffer: Float32Array[] = [];
-    let isSpeaking = false;
-    let silenceStart = 0;
-    let isProcessing = false;
+    function float32ToInt16(float32: Float32Array): Int16Array {
+      const int16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      return int16;
+    }
+
+    function int16ToBase64(int16: Int16Array): string {
+      const bytes = new Uint8Array(int16.buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    }
 
     function setup() {
       if (!stream) return;
 
-      audioContext = new AudioContext({ sampleRate: 16000 }); // Sarvam wants 16kHz
+      // Audio capture at 16kHz
+      audioContext = new AudioContext({ sampleRate: 16000 });
       const source = audioContext.createMediaStreamSource(stream);
-
-      // ScriptProcessor to capture raw PCM
       scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
 
       scriptNode.onaudioprocess = (e) => {
         if (destroyed) return;
-
-        const inputData = e.inputBuffer.getChannelData(0);
-        const now = Date.now();
-
-        // Calculate RMS
-        let sum = 0;
-        for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
-        const rms = Math.sqrt(sum / inputData.length);
-
-        if (rms > SILENCE_THRESHOLD) {
-          // Sound detected
-          if (!isSpeaking) {
-            isSpeaking = true;
-            speechBuffer = [];
-          }
-          speechBuffer.push(new Float32Array(inputData));
-          silenceStart = 0;
-        } else if (isSpeaking) {
-          // Silence during speech — keep buffering briefly
-          speechBuffer.push(new Float32Array(inputData));
-
-          if (silenceStart === 0) {
-            silenceStart = now;
-          } else if (now - silenceStart >= SILENCE_DURATION_MS) {
-            // Speaker stopped — send accumulated audio
-            isSpeaking = false;
-            silenceStart = 0;
-
-            const totalSamples = speechBuffer.reduce((s, b) => s + b.length, 0);
-            if (totalSamples >= MIN_SPEECH_SAMPLES && !isProcessing) {
-              const pcm = mergeSpeechBuffer(speechBuffer);
-              speechBuffer = [];
-              sendAudio(pcm);
-            } else {
-              speechBuffer = [];
-            }
-          }
-        }
+        const pcm = float32ToInt16(e.inputBuffer.getChannelData(0));
+        pcmBuffer.push(pcm);
       };
 
       source.connect(scriptNode);
-      scriptNode.connect(audioContext.destination); // Required for scriptProcessor to fire
-    }
+      scriptNode.connect(audioContext.destination);
 
-    function mergeSpeechBuffer(buffers: Float32Array[]): Float32Array {
-      const totalLength = buffers.reduce((s, b) => s + b.length, 0);
-      const result = new Float32Array(totalLength);
-      let offset = 0;
-      for (const buf of buffers) {
-        result.set(buf, offset);
-        offset += buf.length;
-      }
-      return result;
-    }
+      // Connect to Sarvam.ai WebSocket with subprotocol auth
+      ws = new WebSocket(SARVAM_WS_URL, [`api-subscription-key.${SARVAM_API_KEY}`]);
+      wsRef.current = ws;
 
-    function encodeWAV(pcm: Float32Array, sampleRate: number): Blob {
-      const numChannels = 1;
-      const bitsPerSample = 16;
-      const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-      const blockAlign = numChannels * (bitsPerSample / 8);
-      const dataSize = pcm.length * (bitsPerSample / 8);
-      const headerSize = 44;
+      ws.onopen = () => {
+        console.log(`[stt:${speaker}] Connected to Sarvam.ai streaming`);
+      };
 
-      const buffer = new ArrayBuffer(headerSize + dataSize);
-      const view = new DataView(buffer);
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
 
-      // WAV header
-      writeString(view, 0, "RIFF");
-      view.setUint32(4, 36 + dataSize, true);
-      writeString(view, 8, "WAVE");
-      writeString(view, 12, "fmt ");
-      view.setUint32(16, 16, true); // PCM chunk size
-      view.setUint16(20, 1, true); // PCM format
-      view.setUint16(22, numChannels, true);
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, byteRate, true);
-      view.setUint16(32, blockAlign, true);
-      view.setUint16(34, bitsPerSample, true);
-      writeString(view, 36, "data");
-      view.setUint32(40, dataSize, true);
-
-      // PCM data — convert float32 to int16
-      let offset = 44;
-      for (let i = 0; i < pcm.length; i++) {
-        const sample = Math.max(-1, Math.min(1, pcm[i]));
-        const int16 = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-        view.setInt16(offset, int16, true);
-        offset += 2;
-      }
-
-      return new Blob([buffer], { type: "audio/wav" });
-    }
-
-    function writeString(view: DataView, offset: number, str: string) {
-      for (let i = 0; i < str.length; i++) {
-        view.setUint8(offset + i, str.charCodeAt(i));
-      }
-    }
-
-    async function sendAudio(pcm: Float32Array) {
-      if (isProcessing) return;
-      isProcessing = true;
-
-      try {
-        const wavBlob = encodeWAV(pcm, 16000);
-        console.log(`[stt:${speaker}] Sending ${(wavBlob.size / 1024).toFixed(1)}KB WAV (${(pcm.length / 16000).toFixed(1)}s)`);
-
-        const formData = new FormData();
-        formData.append("audio", wavBlob, "speech.wav");
-        formData.append("callId", callId);
-        formData.append("speaker", speaker);
-
-        const res = await fetch("/api/stt", {
-          method: "POST",
-          body: formData,
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          if (data.transcript) {
-            console.log(`[stt:${speaker}] ✓ "${data.transcript}"`);
+          if (msg.type === "data" && msg.data?.transcript) {
+            const transcript = msg.data.transcript.trim();
+            if (transcript) {
+              console.log(`[stt:${speaker}] "${transcript}"`);
+              // Write to Firestore
+              const callRef = doc(db, "calls", callId);
+              updateDoc(callRef, {
+                transcript: arrayUnion({
+                  speaker,
+                  text: transcript,
+                  timestamp: Date.now(),
+                }),
+              }).catch((err) => console.error(`[stt:${speaker}] Firestore write error:`, err));
+            }
+          } else if (msg.type === "error") {
+            console.error(`[stt:${speaker}] Sarvam error:`, msg);
           }
-        } else {
-          const err = await res.text();
-          console.error(`[stt:${speaker}] HTTP ${res.status}: ${err}`);
+        } catch {
+          // Non-JSON message, ignore
         }
-      } catch (err) {
-        console.error(`[stt:${speaker}] Error:`, err);
-      } finally {
-        isProcessing = false;
-      }
+      };
+
+      ws.onerror = (e) => {
+        console.error(`[stt:${speaker}] WebSocket error:`, e);
+      };
+
+      ws.onclose = (e) => {
+        console.log(`[stt:${speaker}] WebSocket closed: code=${e.code}`);
+      };
+
+      // Send accumulated PCM chunks every CHUNK_MS
+      sendInterval = setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN || pcmBuffer.length === 0) return;
+
+        // Merge all buffered PCM chunks
+        const totalLen = pcmBuffer.reduce((s, b) => s + b.length, 0);
+        const merged = new Int16Array(totalLen);
+        let offset = 0;
+        for (const buf of pcmBuffer) {
+          merged.set(buf, offset);
+          offset += buf.length;
+        }
+        pcmBuffer = [];
+
+        // Send as base64 JSON
+        const base64 = int16ToBase64(merged);
+        ws.send(JSON.stringify({
+          audio: {
+            data: base64,
+            sample_rate: 16000,
+            encoding: "pcm",
+          },
+        }));
+      }, CHUNK_MS);
     }
 
     setup();
 
     return () => {
       destroyed = true;
+      if (sendInterval) clearInterval(sendInterval);
       if (scriptNode) {
         scriptNode.disconnect();
         scriptNode.onaudioprocess = null;
       }
       if (audioContext) audioContext.close().catch(() => {});
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+      wsRef.current = null;
     };
   }, [stream, callId, speaker, isActive]);
 }
