@@ -22,7 +22,7 @@
 
 A **live AI teleprompter for sales agents**. Agent starts a VoIP call from the browser, customer joins via a shared link (WhatsApp-style). AI listens in real time, transcribes both sides, and generates exactly what the agent should say next.
 
-**Core loop:** Customer speaks → Sarvam.ai transcribes → Gemini 2.5 Flash generates agent's next line → teleprompter updates on screen.
+**Core loop:** Customer speaks → Sarvam.ai transcribes → Gemini 3.1 Flash Lite generates agent's next line → teleprompter updates on screen.
 
 Target: Indian sales teams. Built for OceanLab × CHARUSAT Hackathon.
 
@@ -34,7 +34,7 @@ Target: Indian sales teams. Built for OceanLab × CHARUSAT Hackathon.
 - WebRTC VoIP calling (browser-to-browser via PeerJS)
 - Shareable call link for customer (`/call/[callId]`)
 - Live STT via Sarvam.ai streaming WebSocket (direct from browser)
-- Live teleprompter powered by Gemini 2.5 Flash
+- Live teleprompter powered by Gemini 3.1 Flash Lite
 - 4 screens: Dashboard, Live Call, Customer Call Page, Post-Call Summary
 - Hardcoded B2B SaaS demo playbook
 - Firebase Firestore for call state + transcripts
@@ -58,7 +58,7 @@ Target: Indian sales teams. Built for OceanLab × CHARUSAT Hackathon.
 | UI | Tailwind CSS v4 + shadcn/ui | Brutalist dark theme |
 | VoIP | PeerJS (WebRTC) | Browser-to-browser audio, PeerJS cloud signaling |
 | STT | Sarvam.ai `saaras:v3` | Streaming WebSocket from browser, 23 Indian languages |
-| LLM | Gemini 2.5 Flash | `@google/genai` SDK, streaming responses |
+| LLM | Gemini 3.1 Flash Lite | `@google/genai` SDK, streaming responses |
 | Database | Firebase Firestore | Real-time `onSnapshot` listeners |
 | Auth | None | Demo mode, hardcoded agent |
 | Hosting | Vercel (deploy) + cloudflared (dev tunnel) | |
@@ -124,9 +124,11 @@ calls/{callId}: { agentId, contactId, contactName, contactCompany, contactPhone,
 
 1. `useCallCopilot` hook listens to Firestore `onSnapshot`
 2. Detects new `customer` transcript entry
-3. POSTs to `/api/call/teleprompter` with customer utterance + conversation history
-4. Server streams Gemini 2.5 Flash response (system prompt = demo playbook)
-5. Client reads stream chunk-by-chunk → teleprompter text updates live
+3. **Echo protection**: skips if within 6-second cooldown (agent just spoke) or if text matches the last teleprompter line (echo of agent's voice through customer's mic)
+4. POSTs to `/api/call/teleprompter` with customer utterance + conversation history
+5. Server streams Gemini 3.1 Flash Lite response (system prompt = demo playbook)
+6. Client reads stream chunk-by-chunk → teleprompter text updates live
+7. After generation: sets 6-second cooldown to prevent echo feedback loop
 6. Completed line appended to transcript as `speaker: "agent"`
 
 ---
@@ -163,7 +165,7 @@ Hardcoded Cold Outbound B2B SaaS for "ReportFlow". Goal: book a 30-min demo. Sta
 ## Environment Variables
 
 ```env
-# Gemini — model: gemini-2.5-flash
+# Gemini — model: gemini-3.1-flash-lite-preview
 GEMINI_API_KEY=
 
 # Sarvam.ai — streaming STT (server-side)
