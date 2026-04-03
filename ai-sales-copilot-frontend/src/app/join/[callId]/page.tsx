@@ -13,7 +13,6 @@ export default function CustomerCallPage() {
   const [error, setError] = useState<string | null>(null);
   const peerRef = useRef<Peer | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const audioElRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     let destroyed = false;
@@ -45,23 +44,25 @@ export default function CustomerCallPage() {
         call.on("stream", (agentStream) => {
           if (destroyed) return;
           setStatus("connected");
-
-          // Play agent's audio — append to DOM for browser compatibility
+          // Play agent's audio using programmatic audio element
           const audio = document.createElement("audio");
-          audio.autoplay = true;
-          audio.setAttribute("playsinline", "true");
           audio.srcObject = agentStream;
-          audio.style.display = "none";
-          document.body.appendChild(audio);
-          audio.play().catch((e) => console.error("[audio] Play failed:", e));
-          audioElRef.current = audio;
+          audio.autoplay = true;
+          audio.play().catch(() => {});
         });
 
-        call.on("close", () => setStatus("ended"));
-        call.on("error", (err) => setError(err.message));
+        call.on("close", () => {
+          setStatus("ended");
+        });
+
+        call.on("error", (err) => {
+          setError(err.message);
+        });
       });
 
-      peer.on("error", (err) => setError(err.message));
+      peer.on("error", (err) => {
+        setError(err.message);
+      });
     }
 
     joinCall();
@@ -70,38 +71,28 @@ export default function CustomerCallPage() {
       destroyed = true;
       peerRef.current?.destroy();
       streamRef.current?.getTracks().forEach(t => t.stop());
-      if (audioElRef.current) {
-        audioElRef.current.pause();
-        audioElRef.current.srcObject = null;
-        audioElRef.current.remove();
-      }
     };
   }, [callId]);
 
   function handleHangUp() {
     peerRef.current?.destroy();
     streamRef.current?.getTracks().forEach(t => t.stop());
-    if (audioElRef.current) {
-      audioElRef.current.pause();
-      audioElRef.current.srcObject = null;
-      audioElRef.current.remove();
-    }
     setStatus("ended");
   }
 
   return (
-    <div className="h-screen flex flex-col items-center justify-center bg-[#0a0a0a] text-white gap-6 font-mono">
+    <div className="h-screen flex flex-col items-center justify-center bg-background text-foreground gap-6">
       {status === "connecting" && (
         <>
-          <div className="size-16 border-4 border-[#333] border-t-[#00ff88] rounded-full animate-spin" />
-          <p className="text-[#888]">Connecting to call...</p>
+          <div className="size-16 border-4 border-muted border-t-primary rounded-full animate-spin" />
+          <p className="text-muted-foreground">Connecting to call...</p>
         </>
       )}
 
       {status === "ringing" && (
         <>
-          <div className="size-16 border-4 border-[#333] border-t-yellow-500 rounded-full animate-spin" />
-          <p className="text-yellow-500">Ringing agent...</p>
+          <div className="size-16 border-4 border-muted border-t-warning rounded-full animate-spin" />
+          <p className="text-warning">Ringing agent...</p>
         </>
       )}
 
@@ -109,16 +100,16 @@ export default function CustomerCallPage() {
         <>
           <div className="flex items-center gap-3">
             <span className="relative flex size-3">
-              <span className="absolute inline-flex h-full w-full animate-ping bg-[#00ff88] opacity-75 rounded-full" />
-              <span className="relative inline-flex size-3 bg-[#00ff88] rounded-full" />
+              <span className="absolute inline-flex h-full w-full animate-ping bg-success opacity-75 rounded-full" />
+              <span className="relative inline-flex size-3 bg-success rounded-full" />
             </span>
-            <Mic className="size-5 text-[#00ff88]" />
-            <span className="text-[#00ff88] text-lg">Connected</span>
+            <Mic className="size-5 text-success" />
+            <span className="text-success text-lg font-semibold">Connected</span>
           </div>
-          <p className="text-[#666] text-sm">You are in a call with the sales agent</p>
+          <p className="text-muted-foreground text-sm">You are in a call with the sales agent</p>
           <button
             onClick={handleHangUp}
-            className="mt-8 flex items-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-500 text-white font-semibold"
+            className="mt-8 flex items-center gap-2 px-6 py-3 bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold rounded-xl transition-colors"
           >
             <PhoneOff className="size-4" />
             Hang Up
@@ -128,13 +119,14 @@ export default function CustomerCallPage() {
 
       {status === "ended" && (
         <>
-          <Phone className="size-8 text-[#555]" />
-          <p className="text-[#888]">Call ended</p>
+          <Phone className="size-8 text-muted-foreground" />
+          <p className="text-muted-foreground">Call ended</p>
+          <p className="text-xs text-muted-foreground">You can close this tab.</p>
         </>
       )}
 
       {error && (
-        <p className="text-red-400 text-sm mt-4">{error}</p>
+        <p className="text-destructive text-sm mt-4">{error}</p>
       )}
     </div>
   );

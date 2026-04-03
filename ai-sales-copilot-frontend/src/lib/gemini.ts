@@ -1,8 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 
-export const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY ?? "" });
+if (!process.env.GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY is not set");
+}
 
-export const GEMINI_MODEL = "gemini-3.1-flash-lite-preview";
+export const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+export const GEMINI_MODEL = "gemini-2.5-flash";
 
 export const DEMO_PLAYBOOK_PROMPT = `You are a sales copilot generating the EXACT words a sales agent should speak on a live call.
 

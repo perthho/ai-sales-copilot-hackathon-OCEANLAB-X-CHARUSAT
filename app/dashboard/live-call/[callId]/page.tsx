@@ -42,16 +42,20 @@ export default function LiveCallPage() {
   const [isEnding, setIsEnding] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  // Play customer audio through speakers
+  // Play customer audio through speakers — must append to DOM for some browsers
   useEffect(() => {
     if (!remoteStream) return;
     const audio = document.createElement("audio");
     audio.autoplay = true;
+    audio.setAttribute("playsinline", "true");
     audio.srcObject = remoteStream;
-    audio.play().catch(() => {});
+    audio.style.display = "none";
+    document.body.appendChild(audio);
+    audio.play().catch((e) => console.error("[audio] Play failed:", e));
     return () => {
       audio.pause();
       audio.srcObject = null;
+      document.body.removeChild(audio);
     };
   }, [remoteStream]);
 
