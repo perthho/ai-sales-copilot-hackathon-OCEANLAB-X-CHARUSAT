@@ -9,6 +9,7 @@ import { TeleprompterBlock } from "@/components/TeleprompterBlock";
 import { useCallCopilot } from "@/hooks/useCallCopilot";
 import { useWebRTCCall } from "@/hooks/useWebRTCCall";
 import { useStreamSTT } from "@/hooks/useStreamSTT";
+import { useAgentTracker } from "@/hooks/useAgentTracker";
 
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -34,11 +35,17 @@ export default function LiveCallPage() {
   const { isReady, isOnCall, callLink, callError, remoteStream, localStream, hangUp } =
     useWebRTCCall(callId, callStatus === "active");
 
-  // Transcribe both audio streams via Sarvam.ai
-  // Use callStatus instead of isOnCall — isOnCall races with remoteStream setState
+  // Track agent reading the teleprompter — detects when agent finishes speaking
+  const { isDelivered, progress } = useAgentTracker(
+    localStream,
+    teleprompterLine,
+    isOnCall && !isGenerating && teleprompterLine.length > 0
+  );
+
+  // Customer STT only runs when agent is NOT speaking (has delivered the line or no line yet)
   const isCallActive = callStatus === "active";
-  useStreamSTT(localStream, callId, "agent", isCallActive);
-  useStreamSTT(remoteStream, callId, "customer", isCallActive);
+  const customerSTTActive = isCallActive && (isDelivered || teleprompterLine.length === 0);
+  useStreamSTT(remoteStream, callId, "customer", customerSTTActive);
 
   const [duration, setDuration] = useState(0);
   const [isEnding, setIsEnding] = useState(false);
@@ -182,7 +189,7 @@ export default function LiveCallPage() {
 
       {/* Teleprompter — bottom 45% */}
       <div className="flex-[45] min-h-0 overflow-y-auto bg-[#0d0d0d]">
-        <TeleprompterBlock line={teleprompterLine} isGenerating={isGenerating} />
+        <TeleprompterBlock line={teleprompterLine} isGenerating={isGenerating} progress={progress} isDelivered={isDelivered} />
       </div>
     </div>
   );

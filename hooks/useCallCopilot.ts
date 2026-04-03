@@ -33,8 +33,6 @@ export function useCallCopilot(callId: string): UseCallCopilotReturn {
   const lastProcessedIndexRef = useRef(-1);
   const isGeneratingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const cooldownUntilRef = useRef(0); // Timestamp — ignore customer entries until this time
-  const lastTeleprompterLineRef = useRef(""); // Track last generated line to filter echoes
 
   const triggerTeleprompter = useCallback(
     async (customerUtterance: string, history: TranscriptEntry[]) => {
@@ -74,13 +72,7 @@ export function useCallCopilot(callId: string): UseCallCopilotReturn {
           setTeleprompterLine(line);
         }
 
-        // Set cooldown — ignore customer entries for 6 seconds after generating a response
-        // This prevents the agent's voice echoing through the customer's mic from
-        // being misidentified as a new customer utterance and triggering another response
-        if (line.trim().length > 0) {
-          cooldownUntilRef.current = Date.now() + 6000;
-          lastTeleprompterLineRef.current = line.trim().toLowerCase();
-        }
+        // Don't add agent entries here — the agent tracker will confirm delivery
       } catch (error: unknown) {
         // AbortError can be DOMException or plain Error depending on the browser
         if (error instanceof Error && error.name === "AbortError") {
@@ -146,22 +138,6 @@ export function useCallCopilot(callId: string): UseCallCopilotReturn {
         if (newCustomerIndex !== -1) {
           lastProcessedIndexRef.current = newCustomerIndex;
           const customerEntry = firestoreTranscript[newCustomerIndex];
-          const now = Date.now();
-
-          // Echo protection: skip if we're in cooldown period (agent just spoke)
-          if (now < cooldownUntilRef.current) {
-            console.log("[copilot] Skipping customer entry (cooldown — likely echo):", customerEntry.text);
-            return;
-          }
-
-          // Echo detection: skip if the customer's text is very similar to what the teleprompter just generated
-          const customerText = customerEntry.text.trim().toLowerCase();
-          const lastLine = lastTeleprompterLineRef.current;
-          if (lastLine && (customerText.includes(lastLine.slice(0, 20)) || lastLine.includes(customerText.slice(0, 20)))) {
-            console.log("[copilot] Skipping customer entry (echo of teleprompter):", customerEntry.text);
-            return;
-          }
-
           triggerTeleprompter(customerEntry.text, firestoreTranscript);
         }
       },
