@@ -35,8 +35,10 @@ export default function LiveCallPage() {
     useWebRTCCall(callId, callStatus === "active");
 
   // Transcribe both audio streams via Sarvam.ai
-  useStreamSTT(localStream, callId, "agent", isOnCall);
-  useStreamSTT(remoteStream, callId, "customer", isOnCall);
+  // Use callStatus instead of isOnCall — isOnCall races with remoteStream setState
+  const isCallActive = callStatus === "active";
+  useStreamSTT(localStream, callId, "agent", isCallActive);
+  useStreamSTT(remoteStream, callId, "customer", isCallActive);
 
   const [duration, setDuration] = useState(0);
   const [isEnding, setIsEnding] = useState(false);
